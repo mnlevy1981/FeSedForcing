@@ -1,0 +1,270 @@
+
+;***************************************************************************
+
+pro create_reduceOxic_fesedfiles_bgcpercsedALT, infile, infile2, outfile,outfile2, percsedfile,xfactor,minval,minoxic
+
+;
+
+popx=320
+popy=384
+popz=60
+
+popkmt=intarr(popx,popy)
+;
+openr,99,'kmt'
+readf,99,popkmt
+close,99
+
+
+zwpop=fltarr(popz)
+openr,99,'zw_pop_m'
+readf,99,zwpop
+close,99
+
+
+fesed=fltarr(popx,popy,popz)
+fesed(*,*,*) = 0.0
+fesedRed = fesed
+
+
+extract_var_file,percsedfile,'PERCENTSED',percsed
+
+; get sinking fluxes  mmolC/m2/s
+extract_var_file,infile2,'POC_FLUX_IN',data
+if max(data) GT 1.0e30 then data(where (data GT 1.0e30)) = 0.0
+
+; convert flux to gC/m2/yr
+data=data * (365.0 * 864.0 * 12.011 * 0.001)
+fpoc=data
+px=0
+
+
+; compute mean horizontal current speed
+
+fesed=fltarr(popx,popy,popz)
+fesed(*,*,*) = 0.0
+fesedRed = fesed
+
+; get data from file 1
+extract_var_file,infile,'UVEL',data1
+    data1 (where (data1 GT 1.0e30)) = 0.0
+
+uvel=data1
+
+
+extract_var_file,infile,'VVEL',data1
+    data1 (where (data1 GT 1.0e30)) = 0.0
+
+vvel=data1
+
+
+; compute absolute value of current speed
+
+
+fesed(*,*,*) = 0.0
+
+
+meanvel = fltarr(popx,popy)
+meanvel(*,*) = 0.0
+numvel = meanvel
+vel3d = fltarr(popx,popy,popz)
+vel3d(*,*,*) = 0.0
+
+
+for z=0,popz-2 do begin
+for x=0,popx-1 do begin
+for y=0,popy-1 do begin
+
+velocity = ABS(uvel(x,y,z)) + ABS(vvel(x,y,z))
+
+
+if (popkmt(x,y) NE 0) AND (popkmt(x,y) GT z) AND (velocity GT 0.0) then begin
+
+vel3d(x,y,z) = velocity
+
+endif
+
+endfor
+endfor
+endfor
+
+
+
+
+
+; impose a minimum %sed in land adjacent margin slope cells
+; create mask of land adjacent cells
+
+landadj = fltarr(popx,popy,popz)
+landadj(*,*,*) = 0.0
+
+
+for x=0,popx-1 do begin
+for y=0,popy-2 do begin
+for z=0,59 do begin
+
+if (popkmt(x,y) NE 0) AND (popkmt(x,y) GT z) then begin
+
+
+; impose a minimal % sed for all land adjacent grid boxes
+for tx = x-1, x+1 do begin
+for ty = y-2, y+2 do begin
+py=ty
+px=tx
+
+if tx EQ -1 then px=popx-1
+if tx EQ popx then px=0
+if ty LE -1 then py=0
+if ty GE popy then py=popy-1
+
+
+; land adjacent?
+if (popkmt(px,py) EQ 0) OR (popkmt(px,py) LE z) then begin
+
+landadj(x,y,z) = 1.0
+
+
+; impose minimum % sed for land adjacent cells
+
+if (percsed(x,y,z) LT minval) then begin
+        percsed(x,y,z) = minval
+endif
+
+endif
+
+
+endfor
+endfor
+
+
+endif
+
+endfor
+endfor
+endfor
+
+; re-scale vertically to ensure each column percsed sums to 1.0
+sumperc=fltarr(popx,popy)
+sumperc(*,*)=0.0
+
+for x=0,popx-1 do begin
+for y=0,popy-1 do begin
+
+for z=0,59 do begin
+sumperc(x,y) = sumperc(x,y) + percsed(x,y,z)
+endfor
+
+if sumperc(x,y) NE 1.0 then percsed(x,y,*) = percsed(x,y,*) * 1.0/sumperc(x,y)
+
+endfor
+endfor
+
+
+put_var_file,percsedfile,'PERCENTSED',percsed
+
+
+
+;
+extract_var_file,infile,'KVMIX',kvmix
+
+kvmix(where (kvmix GT 1.0e30))=0.0
+
+
+extract_var_file,infile,'TEMP',temperat
+temperat(where (temperat GT 1.0e30))=0.0
+
+Tfunc=0.0
+
+
+fesed(*,*,*) = 0.0
+fesedRed(*,*,*) = 0.0
+
+
+; compute fesed input from reducing and oxic sediments
+
+for x=0,popx-1 do begin
+for y=0,popy-1 do begin
+for z=0,popz-1 do begin
+
+if (percsed(x,y,z) GT 0.0) and (popkmt(x,y) GT z) then begin
+
+
+; increase iron source as function current speed and vertical mixing
+
+fesed(x,y,z) = (minoxic * percsed(x,y,z))
+
+
+local_speed=0.0
+scaleup = 1.0
+Kd = 0.0
+
+; speed 1.0 - 40 cm/s  
+
+local_speed = vel3d(x,y,z)
+
+if local_speed LT 0.2 then local_speed = 0.2
+
+if (z LE 40) AND (local_speed LT 2.0) then localspeed = 2.0
+
+if local_speed GT 20.0 then local_speed = 20.0
+
+scaleup = local_speed
+
+
+
+
+Kd = 0.0
+
+if (z GT 1) then Kd = kvmix(x,y,z-1)
+
+
+if (Kd GE 10.0) then Kd = 10.0
+
+
+if (Kd GT scaleup) then scaleup = Kd
+
+
+
+fesed(x,y,z) = fesed(x,y,z) * scaleup
+
+
+sinkpoc = 0.0
+sinkpoc = fpoc(x,y,z)
+
+
+if (z LT 40) and (sinkpoc LT 10.0) then sinkpoc = 10.0
+
+
+Tfunc = 1.5^(((temperat(x,y,z) + 273.15) - (32.0 + 273.15)) / 10.0)
+
+fesedRed(x,y,z) = sinkpoc * xfactor * percsed(x,y,z) * scaleup * Tfunc
+
+endif
+
+endfor
+endfor
+endfor
+ 
+
+print,max(fesed) * 1.0e4
+print,max(fesedRed) * 1.0e4
+
+
+; convert to model input file units
+
+fesed=fesed / ((365.0 * 864.0) * 1.1574e-6)
+put_var_file,outfile,'FESEDFLUXIN',fesed
+
+
+fesedRed=fesedRed / ((365.0 * 864.0) * 1.1574e-6)
+put_var_file,outfile2,'FESEDFLUXIN',fesedRed
+
+
+close,/all
+return
+end
+
+
+;******************************************************************************
+
+
